@@ -235,8 +235,7 @@ impl<T, C> Store<T, C> {
                 info!("region {:?} is applying in store {}",
                       local_state.get_region(),
                       self.store_id());
-                let status = peer.mut_store().set_applying_snapshot();
-                self.apply_worker.schedule(ApplyTask::snapshot(&peer, status)).unwrap();
+                peer.mut_store().schedule_applying_snapshot();
             }
 
             self.region_ranges.insert(enc_end_key(region), region_id);
@@ -1997,7 +1996,10 @@ impl<T: Transport, C: PdClient> mio::Handler for Store<T, C> {
                         }
                     });
                     if let Some(p) = self.region_peers.get_mut(&res.region_id) {
-                        assert!(!p.is_applying_snapshot());
+                        debug!("{} async apply finish: {:?}", p.tag, res);
+                        if p.is_applying_snapshot() {
+                            panic!("{} should not applying snapshot.", p.tag);
+                        }
                         p.raft_group.advance_apply(res.apply_state.get_applied_index());
                         p.mut_store().apply_state = res.apply_state;
                         if has_split {
@@ -2011,6 +2013,9 @@ impl<T: Transport, C: PdClient> mio::Handler for Store<T, C> {
                         p.mut_store().applied_index_term = res.applied_index_term;
                         p.written_keys += res.written_keys;
                         p.written_bytes += res.written_bytes;
+                        if p.has_pending_snap() && p.ready_to_handle_pending_snap() {
+                            self.pending_raft_groups.insert(p.region().get_id());
+                        }
                     }
                     self.on_ready_result(res.region_id, res.exec_res);
                 }
